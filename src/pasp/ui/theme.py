@@ -153,9 +153,6 @@ QHeaderView::section {
     padding: 6px 8px;
     font-weight: 600;
 }
-QTableView::item {
-    padding: 2px 8px;
-}
 QCheckBox {
     spacing: 8px;
     min-height: 28px;

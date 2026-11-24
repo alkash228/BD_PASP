@@ -336,6 +336,7 @@ class QueryExportWorker(QThread):
 
     succeeded = pyqtSignal(str, int)
     failed = pyqtSignal(str)
+    progress = pyqtSignal(int)
 
     def __init__(self, params: ConnParams, sql: str, schema: str, table: str, destination: Path, identity: bool):
         super().__init__()
@@ -360,7 +361,7 @@ class QueryExportWorker(QThread):
                 self._destination,
                 identity=self._identity,
                 stop=self._stop,
-                on_progress=lambda _written, _total: None,
+                on_progress=lambda written, _total: self.progress.emit(written),
             )
             self.succeeded.emit(str(self._destination), count)
         except ExportCancelled:

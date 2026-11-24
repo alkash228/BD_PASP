@@ -1,4 +1,11 @@
 from PyQt6.QtCore import QAbstractTableModel, QModelIndex, Qt
+from PyQt6.QtGui import QColor, QPainter
+from PyQt6.QtWidgets import QStyledItemDelegate
+
+_TEXT = QColor("#242424")
+_ALT = QColor("#FAFAFA")
+_SELECTED = QColor("#EBF3FC")
+_WHITE = QColor("#FFFFFF")
 
 
 class ResultModel(QAbstractTableModel):
@@ -56,3 +63,32 @@ class ResultModel(QAbstractTableModel):
                 return self._columns[section]
             return None
         return str(section + 1)
+
+
+class FastCellDelegate(QStyledItemDelegate):
+    """Рисует текст сам, без стиля каждой ячейки. Иначе прокрутка перерисовывает таблицу через QSS."""
+
+    def paint(self, painter: QPainter, option, index: QModelIndex) -> None:
+        painter.save()
+        painter.setClipRect(option.rect)
+        selected = bool(option.state & Qt.StateFlag.State_Selected)
+        if selected:
+            painter.fillRect(option.rect, _SELECTED)
+        elif index.row() % 2:
+            painter.fillRect(option.rect, _ALT)
+        else:
+            painter.fillRect(option.rect, _WHITE)
+        raw = index.data(Qt.ItemDataRole.DisplayRole)
+        if raw:
+            text = str(raw)
+            if len(text) > 500:
+                text = text[:500]
+            rect = option.rect.adjusted(8, 0, -6, 0)
+            painter.setPen(_TEXT)
+            painter.setFont(option.font)
+            painter.drawText(
+                rect,
+                int(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter),
+                option.fontMetrics.elidedText(text, Qt.TextElideMode.ElideRight, max(0, rect.width())),
+            )
+        painter.restore()

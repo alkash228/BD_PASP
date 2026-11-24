@@ -37,8 +37,8 @@ from pasp.infrastructure.secrets import load_password
 from pasp.sqlfmt import safe_filename
 from pasp.ui.connect_dialog import ConnectDialog
 from pasp.ui.explorer import ObjectExplorer
-from pasp.ui.export_dialog import ExportDialog
-from pasp.ui.results_model import ResultModel
+from pasp.ui.export_dialog import ExportDialog, ResultExportDialog
+from pasp.ui.results_model import FastCellDelegate, ResultModel
 from pasp.ui.saved_queries import SavedQueriesDialog
 from pasp.ui.schedule_dialog import ScheduleDialog
 from pasp.ui.sql_edit import SqlEdit
@@ -85,6 +85,7 @@ class MainWindow(QMainWindow):
         self._query_running = False
         self._meta_running = False
         self._sized = False
+        self._last_sql = ""
         self._tree_guard = False
         self._meta_pending = False
         self._quitting = False
@@ -184,16 +185,23 @@ class MainWindow(QMainWindow):
         self.model = ResultModel()
         self.table = QTableView()
         self.table.setModel(self.model)
-        self.table.setAlternatingRowColors(True)
+        self.table.setAlternatingRowColors(False)
         self.table.setWordWrap(False)
         self.table.setTextElideMode(Qt.TextElideMode.ElideRight)
         self.table.setShowGrid(False)
         self.table.setSortingEnabled(False)
+        self.table.setUniformRowHeights(True)
+        self.table.setItemDelegate(FastCellDelegate(self.table))
         self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.table.setVerticalScrollMode(QAbstractItemView.ScrollMode.ScrollPerPixel)
         self.table.setHorizontalScrollMode(QAbstractItemView.ScrollMode.ScrollPerPixel)
+        self.table.verticalScrollBar().setSingleStep(28)
         self.table.verticalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Fixed)
         self.table.verticalHeader().setDefaultSectionSize(28)
+        self.table.verticalHeader().setMinimumSectionSize(28)
+        self.table.verticalHeader().setHighlightSections(False)
+        self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
+        self.table.horizontalHeader().setHighlightSections(False)
         self.table.horizontalHeader().setStretchLastSection(False)
         self.table.horizontalHeader().setDefaultAlignment(
             Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter
@@ -339,7 +347,10 @@ class MainWindow(QMainWindow):
         self.cancel_button.setEnabled(self._query_running)
         self.disconnect_button.setEnabled(connected and not self._query_running)
         self.db_combo.setEnabled(connected and not self._query_running and self.db_combo.count() > 0)
-        self.export_button.setEnabled(connected and not self._query_running and bool(self.tree.checked_tables()))
+        has_result = bool(self._last_sql) and self.model.columnCount() > 0
+        self.export_button.setEnabled(
+            connected and not self._query_running and (bool(self.tree.checked_tables()) or has_result)
+        )
         self.queries_button.setEnabled(not self._query_running)
         self.objects_hint.setVisible(not connected or self.tree.topLevelItemCount() == 0)
 
@@ -365,6 +376,7 @@ class MainWindow(QMainWindow):
         self.db_combo.blockSignals(False)
         self.tree.set_params(None)
         self.checked_label.setText("Отмечено: 0")
+        self._last_sql = ""
         self.model.clear()
         self.results_stack.setCurrentWidget(self.empty_results)
         self._rows_label.clear()
@@ -484,6 +496,7 @@ class MainWindow(QMainWindow):
         if not sql:
             self._log("Введите запрос.")
             return
+        self._last_sql = sql
         self.model.clear()
         self.results_stack.setCurrentWidget(self.empty_results)
         self._rows_label.clear()
@@ -560,7 +573,6 @@ class MainWindow(QMainWindow):
         if not self._meta_running:
             self._progress.hide()
             self._state_label.setText("Готово")
-        self.table.setSortingEnabled(self.model.rowCount() > 0)
         self._refresh_actions()
 
     def _tick_clock(self) -> None:
@@ -819,12 +831,40 @@ class MainWindow(QMainWindow):
         self.editor.setPlainText(sql)
         self._execute()
 
+    def _has_result(self) -> bool:
+        return bool(self._last_sql) and self.model.columnCount() > 0
+
     def _export(self) -> None:
         if self._params is None or self._query_running:
             return
         tables = self.tree.checked_tables()
-        if not tables:
-            QMessageBox.information(self, "Выгрузка", "Отметьте таблицы в списке слева.")
+        has_result = self._has_result()
+        if has_result and tables:
+            box = QMessageBox(self)
+            box.setWindowTitle("Выгрузка")
+            box.setText("Что записать скриптом для SQL Server?")
+            result_button = box.addButton("Результат запроса", QMessageBox.ButtonRole.AcceptRole)
+            tables_button = box.addButton("Отмеченные таблицы", QMessageBox.ButtonRole.AcceptRole)
+            box.addButton("Отмена", QMessageBox.ButtonRole.RejectRole)
+            box.exec()
+            chosen = box.clickedButton()
+            if chosen == result_button:
+                self._export_result()
+            elif chosen == tables_button:
+                self._export_tables(tables)
             return
-        dialog = ExportDialog(self._params, tables, self)
-        dialog.exec()
+        if has_result:
+            self._export_result()
+            return
+        if tables:
+            self._export_tables(tables)
+
+    def _export_tables(self, tables: list[tuple[str, str, str]]) -> None:
+        if self._params is None:
+            return
+        ExportDialog(self._params, tables, self).exec()
+
+    def _export_result(self) -> None:
+        if self._params is None or not self._last_sql:
+            return
+        ResultExportDialog(self._params, self._last_sql, self).exec()
