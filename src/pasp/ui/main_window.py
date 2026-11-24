@@ -190,7 +190,6 @@ class MainWindow(QMainWindow):
         self.table.setTextElideMode(Qt.TextElideMode.ElideRight)
         self.table.setShowGrid(False)
         self.table.setSortingEnabled(False)
-        self.table.setUniformRowHeights(True)
         self.table.setItemDelegate(FastCellDelegate(self.table))
         self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.table.setVerticalScrollMode(QAbstractItemView.ScrollMode.ScrollPerPixel)
