@@ -81,14 +81,17 @@ class FastCellDelegate(QStyledItemDelegate):
         raw = index.data(Qt.ItemDataRole.DisplayRole)
         if raw:
             text = str(raw)
-            if len(text) > 500:
-                text = text[:500]
             rect = option.rect.adjusted(8, 0, -6, 0)
+            width = max(0, rect.width())
+            average = max(1, option.fontMetrics.averageCharWidth())
+            visible = width // average + 2
+            if len(text) > visible:
+                text = text[:visible]
             painter.setPen(_TEXT)
             painter.setFont(option.font)
             painter.drawText(
                 rect,
                 int(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter),
-                option.fontMetrics.elidedText(text, Qt.TextElideMode.ElideRight, max(0, rect.width())),
+                text,
             )
         painter.restore()

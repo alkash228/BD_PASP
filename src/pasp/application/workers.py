@@ -22,8 +22,7 @@ from pasp.infrastructure.mssql import (
 )
 from pasp.sqlfmt import format_cell, split_batches
 
-_DISPLAY_CAP = 2000
-_FETCH_BATCH = 500
+_FETCH_BATCH = 2000
 
 
 def _cancelled(exc: BaseException) -> bool:
@@ -121,10 +120,8 @@ class DetailWorker(QThread):
 
 
 class QueryWorker(QThread):
-    """Читает результат пачками и ждёт подтверждения интерфейса перед следующей.
-
-    Так очередь сигналов не раздувается, а соединение закрывается, как только
-    показан предел строк — сервер не остаётся с открытым курсором.
+    """Читает весь результат пачками. Следующая пачка с сервера читается,
+    пока интерфейс вставляет предыдущую, и не копится больше одной.
     """
 
     columns_ready = pyqtSignal(list)
@@ -207,27 +204,17 @@ class QueryWorker(QThread):
                 columns = [item[0] or "" for item in cursor.description]
                 self.columns_ready.emit(columns)
                 set_rows = 0
-                while True:
+                rows = cursor.fetchmany(_FETCH_BATCH)
+                while rows:
                     if self._stop.is_set():
                         return set_rows, False, True
-                    rows = cursor.fetchmany(_FETCH_BATCH)
-                    if not rows:
-                        break
                     display = [[format_cell(value) for value in row] for row in rows]
                     set_rows += len(display)
                     self._ack.clear()
                     self.batch_ready.emit(display)
+                    rows = cursor.fetchmany(_FETCH_BATCH)
                     if not self._wait_ack():
                         return set_rows, False, True
-                    if set_rows >= _DISPLAY_CAP and len(rows) == _FETCH_BATCH:
-                        peek = cursor.fetchmany(1)
-                        if peek:
-                            self.message.emit(
-                                f"Показаны первые {set_rows} строк. "
-                                "Остальное не загружено, чтобы не занимать память "
-                                "и не держать блокировку на сервере."
-                            )
-                            return set_rows, True, False
                 if set_rows == 0:
                     self.message.emit("Запрос не вернул строк.")
                 else:

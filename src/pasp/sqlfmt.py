@@ -80,10 +80,7 @@ def format_cell(value: object) -> str:
         if math.isnan(value) or math.isinf(value):
             return ""
         return repr(value)
-    text = str(value)
-    if len(text) > 1000:
-        return text[:1000] + "…"
-    return text
+    return str(value)
 
 
 def format_type(type_name: str, max_length: int, precision: int, scale: int) -> str:
