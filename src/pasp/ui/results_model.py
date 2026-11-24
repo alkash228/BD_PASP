@@ -1,6 +1,6 @@
 from PyQt6.QtCore import QAbstractTableModel, QModelIndex, Qt
 from PyQt6.QtGui import QColor, QPainter
-from PyQt6.QtWidgets import QStyledItemDelegate
+from PyQt6.QtWidgets import QStyle, QStyledItemDelegate
 
 _TEXT = QColor("#242424")
 _ALT = QColor("#FAFAFA")
@@ -71,7 +71,7 @@ class FastCellDelegate(QStyledItemDelegate):
     def paint(self, painter: QPainter, option, index: QModelIndex) -> None:
         painter.save()
         painter.setClipRect(option.rect)
-        selected = bool(option.state & Qt.StateFlag.State_Selected)
+        selected = bool(option.state & QStyle.StateFlag.State_Selected)
         if selected:
             painter.fillRect(option.rect, _SELECTED)
         elif index.row() % 2:
