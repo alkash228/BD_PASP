@@ -11,6 +11,7 @@ from PyQt6.QtCore import QThread, pyqtSignal
 from pasp.infrastructure.mssql import (
     ConnParams,
     ExportCancelled,
+    column_meta,
     connect,
     current_database,
     database_catalog,
@@ -20,9 +21,28 @@ from pasp.infrastructure.mssql import (
     list_databases,
     object_details,
 )
-from pasp.sqlfmt import format_cell, retarget_export_script, split_batches
+from pasp.sqlfmt import (
+    format_cell,
+    insert_column_names,
+    merge_staged_rows,
+    retarget_export_script,
+    split_batches,
+    staging_table_sql,
+)
 
 _FETCH_BATCH = 2000
+
+
+def _sql_statements(sql: str) -> list[str]:
+    parts = []
+    for chunk in sql.split(";\n"):
+        text = chunk.strip()
+        if not text:
+            continue
+        if not text.endswith(";"):
+            text += ";"
+        parts.append(text)
+    return parts
 
 
 def _cancelled(exc: BaseException) -> bool:
@@ -358,7 +378,7 @@ class QueryExportWorker(QThread):
 
 
 class ScriptWorker(QThread):
-    """Вставляет строки из файла выгрузки в указанную таблицу на сервере."""
+    """Обновляет строки по первой колонке файла и добавляет новые. Старые не удаляет."""
 
     message = pyqtSignal(str)
     progress = pyqtSignal(int, int)
@@ -380,25 +400,54 @@ class ScriptWorker(QThread):
         connection = None
         try:
             sql = retarget_export_script(self._path.read_text(encoding="utf-8-sig"), self._schema, self._table)
+            columns = insert_column_names(sql)
             batches = split_batches(sql)
-            if not batches:
-                self.failed.emit("В файле нет команд.")
+            if not columns or not batches:
+                self.failed.emit("В файле нет строк выгруженной таблицы.")
                 return
             connection = connect(self._params, query_timeout=0)
+            meta = column_meta(connection, self._schema, self._table)
+            if not meta:
+                self.failed.emit(f"Таблицы [{self._schema}].[{self._table}] нет на этом сервере.")
+                return
+            known = {column.name: column for column in meta}
+            missing = [name for name in columns if name not in known]
+            if missing:
+                self.failed.emit("В таблице на сервере нет колонок из файла: " + ", ".join(missing))
+                return
+            identity = [column.name for column in meta if column.identity]
+            keys = [columns[0]]
             cursor = connection.cursor()
             try:
-                total = len(batches)
+                connection.autocommit = False
+                cursor.execute(staging_table_sql([(name, known[name].type_sql) for name in columns]))
+                total = len(batches) + 1
                 for index, batch in enumerate(batches, start=1):
                     if self._stop.is_set():
+                        connection.rollback()
                         self.failed.emit("Отменено")
                         return
                     self.progress.emit(index, total)
                     cursor.execute(batch)
                     self._discard(cursor)
+                if self._stop.is_set():
+                    connection.rollback()
+                    self.failed.emit("Отменено")
+                    return
+                self.progress.emit(total, total)
+                for statement in _sql_statements(merge_staged_rows(self._schema, self._table, columns, keys, identity)):
+                    cursor.execute(statement)
+                    self._discard(cursor)
+                connection.commit()
                 self.succeeded.emit(total)
             finally:
                 cursor.close()
         except Exception as exc:
+            if connection is not None:
+                try:
+                    connection.rollback()
+                except Exception:
+                    pass
             if self._stop.is_set() or _cancelled(exc):
                 self.failed.emit("Отменено")
             else:

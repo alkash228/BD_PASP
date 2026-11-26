@@ -204,6 +204,17 @@ _TARGET = re.compile(
     r"INSERT\s+INTO\s+\[((?:\]\]|[^\]])*)\]\.\[((?:\]\]|[^\]])*)\]",
     re.IGNORECASE,
 )
+_BATCH_TX = re.compile(r"^(?:BEGIN|COMMIT) TRANSACTION;\s*$", re.IGNORECASE | re.MULTILINE)
+_QUALIFIED = r"\[(?:\]\]|[^\]])*\]\.\[(?:\]\]|[^\]])*\]"
+_IDENTITY_LINE = re.compile(
+    rf"^SET\s+IDENTITY_INSERT\s+{_QUALIFIED}\s+(?:ON|OFF);\s*$",
+    re.IGNORECASE | re.MULTILINE,
+)
+_INSERT_COLUMNS = re.compile(
+    r"INSERT\s+INTO\s+#pasp_load\s*\(([^)]*)\)\s*VALUES",
+    re.IGNORECASE,
+)
+_BRACKET = re.compile(r"\[((?:\]\]|[^\]])*)\]")
 
 
 def script_target(sql: str) -> tuple[str, str] | None:
@@ -215,7 +226,7 @@ def script_target(sql: str) -> tuple[str, str] | None:
 
 
 def retarget_export_script(sql: str, schema: str, table: str) -> str:
-    """Направляет INSERT из выгруженного файла в таблицу на этом сервере."""
+    """Кладёт строки файла во временную таблицу. Строки на сервере не удаляет."""
     found = script_target(sql)
     if found is None:
         raise ValueError("В файле нет выгрузки таблицы: не найден INSERT INTO [схема].[таблица].")
@@ -230,4 +241,57 @@ def retarget_export_script(sql: str, schema: str, table: str) -> str:
     new_id = f"OBJECT_ID(N'{new_object}'"
     if old_id != new_id:
         sql = sql.replace(old_id, new_id)
+    sql = _BATCH_TX.sub("", sql)
+    sql = _IDENTITY_LINE.sub("", sql)
+    sql = sql.replace(f"INSERT INTO {new_qualified}", "INSERT INTO #pasp_load")
+    if "INSERT INTO #pasp_load" not in sql:
+        raise ValueError("В файле нет INSERT выгрузки таблицы.")
     return sql
+
+
+def insert_column_names(sql: str) -> list[str]:
+    match = _INSERT_COLUMNS.search(sql)
+    if match is None:
+        return []
+    return [part.replace("]]", "]") for part in _BRACKET.findall(match.group(1))]
+
+
+def staging_table_sql(columns: list[tuple[str, str]]) -> str:
+    body = ",\n".join(f"    {quote_ident(name)} {type_sql} NULL" for name, type_sql in columns)
+    return f"CREATE TABLE #pasp_load (\n{body}\n)"
+
+
+def merge_staged_rows(
+    schema: str,
+    table: str,
+    columns: list[str],
+    keys: list[str],
+    identity: list[str],
+) -> str:
+    """Обновляет строки с тем же значением первой колонки и добавляет новые. Чужие строки не трогает."""
+    qualified = f"{quote_ident(schema)}.{quote_ident(table)}"
+    key_match = " AND ".join(
+        f"target.{quote_ident(name)} = source.{quote_ident(name)}" for name in keys
+    )
+    update_columns = [name for name in columns if name not in keys and name not in identity]
+    quoted = ", ".join(quote_ident(name) for name in columns)
+    sources = ", ".join(f"source.{quote_ident(name)}" for name in columns)
+    lines = [
+        f"MERGE {qualified} AS target",
+        "USING #pasp_load AS source",
+        f"ON {key_match}",
+    ]
+    if update_columns:
+        assignments = ", ".join(
+            f"{quote_ident(name)} = source.{quote_ident(name)}" for name in update_columns
+        )
+        lines.append(f"WHEN MATCHED THEN UPDATE SET {assignments}")
+    lines.append(f"WHEN NOT MATCHED BY TARGET THEN INSERT ({quoted}) VALUES ({sources});")
+    statement = "\n".join(lines)
+    if any(name in identity for name in columns):
+        return (
+            f"SET IDENTITY_INSERT {qualified} ON;\n"
+            f"{statement}\n"
+            f"SET IDENTITY_INSERT {qualified} OFF;"
+        )
+    return statement

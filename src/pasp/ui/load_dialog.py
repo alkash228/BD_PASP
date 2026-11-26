@@ -19,7 +19,7 @@ from pasp.sqlfmt import script_target
 
 
 class LoadDialog(QDialog):
-    """Вставляет строки из файла выгрузки в таблицу на текущем сервере."""
+    """Обновляет строки по первой колонке файла. Старые строки не удаляет."""
 
     def __init__(self, params: ConnParams, parent=None):
         super().__init__(parent)
@@ -43,8 +43,9 @@ class LoadDialog(QDialog):
         self.progress.setRange(0, 1)
         self.progress.hide()
         self.status = QLabel(
-            f"Берутся строки из файла выгрузки и вставляются в таблицу на {params.server}, "
-            f"база «{params.database or 'по умолчанию'}». Таблица на сервере уже должна существовать."
+            f"На {params.server}, база «{params.database or 'по умолчанию'}», "
+            "строки с тем же значением первой колонки обновятся. Новые значения добавятся. "
+            "Строки, которых нет в файле, останутся. Удаления не будет."
         )
         self.status.setWordWrap(True)
         self.status.setObjectName("Muted")
@@ -120,7 +121,7 @@ class LoadDialog(QDialog):
         schema = self.schema_edit.text().strip()
         table = self.table_edit.text().strip()
         if not schema or not table:
-            self.status.setText("Укажите схему и таблицу на этом сервере, куда вставлять строки.")
+            self.status.setText("Укажите схему и таблицу на этом сервере. Совпадение идёт по первой колонке файла.")
             return
         self._running = True
         self.start_button.setEnabled(False)
@@ -130,7 +131,7 @@ class LoadDialog(QDialog):
         self.progress.setRange(0, 0)
         self.progress.show()
         self.log.clear()
-        self.status.setText(f"Загрузка в [{schema}].[{table}]…")
+        self.status.setText(f"Обновление [{schema}].[{table}] по первой колонке…")
         worker = ScriptWorker(self._params, path, schema, table)
         worker.progress.connect(self._on_progress)
         worker.message.connect(self.log.appendPlainText)
@@ -150,7 +151,7 @@ class LoadDialog(QDialog):
         self._unlock()
         self.progress.setRange(0, 1)
         self.progress.setValue(1)
-        self.status.setText(f"Готово. Выполнено команд: {batches}.")
+        self.status.setText(f"Готово. Строки обновлены по первой колонке, новые добавлены. Команд: {batches}.")
         self.log.appendPlainText(self.status.text())
 
     def _on_failed(self, message: str) -> None:

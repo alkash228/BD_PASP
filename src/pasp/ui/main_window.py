@@ -131,13 +131,13 @@ class MainWindow(QMainWindow):
         self.cancel_button.setToolTip("Остановить текущий запрос. Клавиша Esc.")
         self.connect_button.setToolTip("Подключиться к SQL Server. Несколько учёток можно сохранить, пароль лежит в Windows, не в файле.")
         self.disconnect_button.setToolTip("Закрыть текущее подключение. Сохранённые учётки останутся.")
-        self.load_button.setToolTip("Взять файл выгруженной таблицы и вставить его строки в таблицу на этом сервере.")
+        self.load_button.setToolTip("Обновить строки по первой колонке файла и добавить новые. Старые строки не удаляются.")
         self.queries_button.setToolTip("Открыть сохранённые запросы.")
         self.schedule_button.setToolTip("Само выгрузить запрос или загрузить файл из папки в нужный день.")
 
         guide = QLabel(
             "Выполнить — посмотреть данные. Выгрузить — записать их в файл. "
-            "Загрузить — вставить строки из файла выгрузки в таблицу на этом сервере. "
+            "Загрузить — обновить строки вашей таблицы по первой колонке файла. Старые строки не удаляются. "
             "Расписание умеет само проверить папку и загрузить файл, когда он появится."
         )
         guide.setObjectName("Muted")
@@ -395,7 +395,7 @@ class MainWindow(QMainWindow):
         elif self._query_running:
             self.load_button.setToolTip("Дождитесь, пока запрос закончится.")
         else:
-            self.load_button.setToolTip("Взять файл выгруженной таблицы и вставить его строки в таблицу на этом сервере.")
+            self.load_button.setToolTip("Обновить строки по первой колонке файла и добавить новые. Старые строки не удаляются.")
         self.queries_button.setEnabled(not self._query_running)
         self.objects_hint.setVisible(not connected or self.tree.topLevelItemCount() == 0)
 
@@ -920,11 +920,11 @@ class MainWindow(QMainWindow):
         worker.failed.connect(self._schedule_failed)
         worker.finished.connect(worker.deleteLater)
         self._schedule_worker = worker
-        self._log(f"Расписание «{job.name}»: строки из {path} в [{schema}].[{table}].")
+        self._log(f"Расписание «{job.name}»: обновляю [{schema}].[{table}] из {path}.")
         worker.start()
 
     def _load_succeeded(self, batches: int) -> None:
-        self._complete_schedule("", f"Строки вставлены в таблицу. Команд: {batches}.")
+        self._complete_schedule("", f"Строки обновлены по первой колонке, новые добавлены. Команд: {batches}.")
 
     def _load_file(self) -> None:
         if self._params is None or self._query_running:

@@ -8,12 +8,15 @@ from pasp.sqlfmt import (
     create_table_sql,
     format_cell,
     format_type,
+    insert_column_names,
+    merge_staged_rows,
     quote_ident,
-    split_batches,
-    sql_literal,
-    write_insert_batch,
     retarget_export_script,
     script_target,
+    split_batches,
+    sql_literal,
+    staging_table_sql,
+    write_insert_batch,
 )
 
 
@@ -94,18 +97,36 @@ class RetargetExportTests(unittest.TestCase):
     def test_script_names_the_exported_table(self):
         self.assertEqual(script_target(self._exported()), ("dbo", "Item"))
 
-    def test_rows_go_into_the_table_on_this_server(self):
+    def test_rows_are_updated_by_key_without_deleting(self):
         script = retarget_export_script(self._exported(), "archive", "Orders")
-        self.assertIn("INSERT INTO [archive].[Orders] ([Id], [Name]) VALUES", script)
-        self.assertIn("SET IDENTITY_INSERT [archive].[Orders] ON;", script)
+        self.assertNotIn("DELETE", script)
+        self.assertIn("INSERT INTO #pasp_load ([Id], [Name]) VALUES", script)
+        self.assertNotIn("INSERT INTO [archive].[Orders]", script)
+        self.assertNotIn("IDENTITY_INSERT", script)
         self.assertIn("CREATE TABLE [archive].[Orders]", script)
         self.assertIn("OBJECT_ID(N'archive.Orders'", script)
         self.assertNotIn("[dbo].[Item]", script)
         self.assertIn("N'a''b'", script)
+        columns = insert_column_names(script)
+        self.assertEqual(columns, ["Id", "Name"])
+        staged = staging_table_sql([("Id", "int"), ("Name", "nvarchar(100)")])
+        self.assertIn("[Id] int NULL", staged)
+        self.assertIn("[Name] nvarchar(100) NULL", staged)
+        merge = merge_staged_rows("archive", "Orders", columns, columns[:1], ["Id"])
+        self.assertIn("MERGE [archive].[Orders] AS target", merge)
+        self.assertIn("USING #pasp_load AS source", merge)
+        self.assertIn("ON target.[Id] = source.[Id]", merge)
+        self.assertIn("WHEN MATCHED THEN UPDATE SET [Name] = source.[Name]", merge)
+        self.assertNotIn("UPDATE SET [Id]", merge)
+        self.assertIn("WHEN NOT MATCHED BY TARGET THEN INSERT ([Id], [Name]) VALUES (source.[Id], source.[Name]);", merge)
+        self.assertNotIn("DELETE", merge)
+        self.assertNotIn("WHEN NOT MATCHED BY SOURCE", merge)
+        self.assertIn("SET IDENTITY_INSERT [archive].[Orders] ON;", merge)
 
-    def test_same_table_keeps_the_script(self):
-        original = self._exported()
-        self.assertEqual(retarget_export_script(original, "dbo", "Item"), original)
+    def test_same_table_is_not_cleared(self):
+        script = retarget_export_script(self._exported(), "dbo", "Item")
+        self.assertNotIn("DELETE", script)
+        self.assertIn("INSERT INTO #pasp_load ([Id], [Name]) VALUES", script)
 
     def test_file_without_table_export_is_rejected(self):
         with self.assertRaises(ValueError):

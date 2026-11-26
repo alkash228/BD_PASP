@@ -281,8 +281,8 @@ class ScheduleEditDialog(QDialog):
             table = self.table_edit.text().strip() or "Таблица"
             self.preview.setText(
                 f"{when.capitalize()} программа проверит «{folder}». "
-                f"Если там есть {filename}, вставит его строки в [{schema}].[{table}] на вашем сервере. "
-                "Если файла нет, подождёт и проверит снова."
+                f"Если там есть {filename}, обновит в [{schema}].[{table}] строки с тем же значением первой колонки и добавит новые. "
+                "Строки, которых нет в файле, останутся. Если файла нет, подождёт и проверит снова."
             )
             return
         name = scheduled_export_name(schema, table, slot)
@@ -370,7 +370,7 @@ class ScheduleDialog(QDialog):
         edit_button = QPushButton("Изменить")
         delete_button = QPushButton("Удалить")
         run_button = QPushButton("Проверить сейчас")
-        run_button.setToolTip("Выгрузка создаст файл, если его ещё нет. Загрузка вставит строки из файла в таблицу на сервере, если файл уже лежит в папке.")
+        run_button.setToolTip("Выгрузка создаст файл, если его ещё нет. Загрузка обновит строки по первой колонке и добавит новые, если файл уже лежит в папке.")
         close_button = QPushButton("Закрыть")
         for button in (add_export, add_load, edit_button, delete_button, run_button, close_button):
             button.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -389,7 +389,7 @@ class ScheduleDialog(QDialog):
         buttons.addStretch(1)
         buttons.addWidget(close_button)
         buttons.addWidget(run_button)
-        hint = QLabel("«Выгрузка в файл» сохраняет результат запроса. «Загрузка на сервер» ждёт файл выгрузки в папке и вставляет его строки в вашу таблицу.")
+        hint = QLabel("«Выгрузка в файл» сохраняет результат запроса. «Загрузка на сервер» ждёт файл в папке и обновляет строки вашей таблицы по первой колонке.")
         hint.setObjectName("Muted")
         hint.setWordWrap(True)
         root = QVBoxLayout(self)

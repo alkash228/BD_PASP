@@ -71,7 +71,7 @@ def describe_job(job: ScheduleJob) -> str:
     if job.action == "load":
         name = job.source_file or "файл не указан"
         target = f"{job.target_schema or 'dbo'}.{job.target_table}" if job.target_table else "таблица не указана"
-        return f"загрузить {name} в {target}, {when}"
+        return f"обновить {target} из файла {name}, {when}"
     return f"выгрузить в файл, {when}"
 
 
