@@ -24,7 +24,7 @@ class SqlEdit(QPlainTextEdit):
         self.setFont(mono_font())
         self.setLineWrapMode(QPlainTextEdit.LineWrapMode.NoWrap)
         self.setTabStopDistance(self.fontMetrics().horizontalAdvance(" ") * 4)
-        self.setPlaceholderText("SELECT TOP (100) * FROM dbo.Table;")
+        self.setPlaceholderText("Например: SELECT * FROM dbo.Таблица. Затем нажмите «Выполнить».")
         self._gutter = _LineNumberArea(self)
         self.blockCountChanged.connect(self._update_gutter_width)
         self.updateRequest.connect(self._update_gutter)

@@ -29,14 +29,21 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from pasp.application.schedule import describe_job, due_slot, load_jobs, update_job
-from pasp.application.workers import KillWorker, MetaWorker, QueryExportWorker, QueryWorker
+from pasp.application.schedule import (
+    describe_job,
+    due_slot,
+    existing_export,
+    load_jobs,
+    scheduled_export_name,
+    update_job,
+)
+from pasp.application.workers import KillWorker, MetaWorker, QueryExportWorker, QueryWorker, ScriptWorker
 from pasp.infrastructure.mssql import ConnParams, connect
 from pasp.infrastructure.profiles import load_profiles
 from pasp.infrastructure.secrets import load_password
-from pasp.sqlfmt import safe_filename
 from pasp.ui.connect_dialog import ConnectDialog
 from pasp.ui.explorer import ObjectExplorer
+from pasp.ui.load_dialog import LoadDialog
 from pasp.ui.export_dialog import ExportDialog, ResultExportDialog
 from pasp.ui.results_model import FastCellDelegate, ResultModel
 from pasp.ui.saved_queries import SavedQueriesDialog
@@ -89,7 +96,7 @@ class MainWindow(QMainWindow):
         self._tree_guard = False
         self._meta_pending = False
         self._quitting = False
-        self._schedule_worker: QueryExportWorker | None = None
+        self._schedule_worker: QueryExportWorker | ScriptWorker | None = None
         self._schedule_job_id = ""
         self._schedule_slot = ""
 
@@ -109,6 +116,7 @@ class MainWindow(QMainWindow):
         self.run_button = _button("Выполнить")
         self.cancel_button = _button("Отмена")
         self.export_button = _button("Выгрузить")
+        self.load_button = _button("Загрузить")
         self.queries_button = _button("Запросы")
         self.schedule_button = _button("Расписание")
         self.connect_button.clicked.connect(self._open_connect)
@@ -116,10 +124,24 @@ class MainWindow(QMainWindow):
         self.run_button.clicked.connect(self._execute)
         self.cancel_button.clicked.connect(self._cancel)
         self.export_button.clicked.connect(self._export)
+        self.load_button.clicked.connect(self._load_file)
         self.queries_button.clicked.connect(self._open_queries)
         self.schedule_button.clicked.connect(self._open_schedule)
-        self.run_button.setToolTip("F5 или Ctrl+Enter. Если выделен фрагмент, выполняется только он.")
-        self.cancel_button.setToolTip("Остановить текущий запрос (Esc)")
+        self.run_button.setToolTip("Показать все строки запроса. F5 или Ctrl+Enter. Если выделен кусок, выполнится только он.")
+        self.cancel_button.setToolTip("Остановить текущий запрос. Клавиша Esc.")
+        self.connect_button.setToolTip("Подключиться к SQL Server. Несколько учёток можно сохранить, пароль лежит в Windows, не в файле.")
+        self.disconnect_button.setToolTip("Закрыть текущее подключение. Сохранённые учётки останутся.")
+        self.load_button.setToolTip("Взять файл выгруженной таблицы и вставить его строки в таблицу на этом сервере.")
+        self.queries_button.setToolTip("Открыть сохранённые запросы.")
+        self.schedule_button.setToolTip("Само выгрузить запрос или загрузить файл из папки в нужный день.")
+
+        guide = QLabel(
+            "Выполнить — посмотреть данные. Выгрузить — записать их в файл. "
+            "Загрузить — вставить строки из файла выгрузки в таблицу на этом сервере. "
+            "Расписание умеет само проверить папку и загрузить файл, когда он появится."
+        )
+        guide.setObjectName("Muted")
+        guide.setWordWrap(True)
 
         toolbar = QHBoxLayout()
         toolbar.setContentsMargins(12, 12, 12, 0)
@@ -130,17 +152,21 @@ class MainWindow(QMainWindow):
             self.run_button,
             self.cancel_button,
             self.export_button,
+            self.load_button,
             self.queries_button,
             self.schedule_button,
         ):
             toolbar.addWidget(button)
         toolbar.addStretch(1)
+        guide_row = QHBoxLayout()
+        guide_row.setContentsMargins(12, 4, 12, 0)
+        guide_row.addWidget(guide)
 
         self.db_combo = QComboBox()
         self.db_combo.setAccessibleName("База данных")
         self.db_combo.currentIndexChanged.connect(self._database_changed)
         self.filter_edit = QLineEdit()
-        self.filter_edit.setPlaceholderText("Фильтр объектов")
+        self.filter_edit.setPlaceholderText("Найти таблицу или папку")
         self.filter_edit.setAccessibleName("Фильтр объектов")
         self.filter_edit.setClearButtonEnabled(True)
         self._filter_timer = QTimer(self)
@@ -148,13 +174,13 @@ class MainWindow(QMainWindow):
         self._filter_timer.setInterval(300)
         self._filter_timer.timeout.connect(self._apply_filter)
         self.filter_edit.textChanged.connect(lambda _text: self._filter_timer.start())
-        self.checked_label = QLabel("Отмечено: 0")
+        self.checked_label = QLabel("Галочка у таблицы — это выгрузка самой таблицы, не результата запроса.")
         self.checked_label.setObjectName("Muted")
         self.tree = ObjectExplorer()
         self.tree.checked_changed.connect(self._on_checked)
         self.tree.status_message.connect(self._log)
         self.tree.database_activated.connect(self._activate_database)
-        self.objects_hint = QLabel("Подключитесь, чтобы увидеть базы, папки и таблицы.")
+        self.objects_hint = QLabel("Сначала нажмите «Подключить». Слева появятся базы и таблицы.")
         self.objects_hint.setObjectName("EmptyHint")
         self.objects_hint.setWordWrap(True)
 
@@ -205,9 +231,9 @@ class MainWindow(QMainWindow):
         self.table.horizontalHeader().setDefaultAlignment(
             Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter
         )
-        self.empty_results = QLabel("Результат запроса появится здесь")
+        self.empty_results = QLabel("Здесь будут все строки запроса. Потом «Выгрузить» запишет их в файл, который можно выполнить в SQL Server.")
         self.empty_results.setObjectName("EmptyHint")
-        self.empty_results.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.empty_results.setWordWrap(True)
         self.results_stack = QStackedWidget()
         self.results_stack.addWidget(self.empty_results)
         self.results_stack.addWidget(self.table)
@@ -261,6 +287,7 @@ class MainWindow(QMainWindow):
         root.setSpacing(0)
         root.addWidget(accent)
         root.addLayout(toolbar)
+        root.addLayout(guide_row)
         root.addLayout(work, 1)
         self.setCentralWidget(central)
 
@@ -347,9 +374,28 @@ class MainWindow(QMainWindow):
         self.disconnect_button.setEnabled(connected and not self._query_running)
         self.db_combo.setEnabled(connected and not self._query_running and self.db_combo.count() > 0)
         has_result = bool(self._last_sql) and self.model.columnCount() > 0
-        self.export_button.setEnabled(
-            connected and not self._query_running and (bool(self.tree.checked_tables()) or has_result)
-        )
+        can_export = connected and not self._query_running and (bool(self.tree.checked_tables()) or has_result)
+        self.export_button.setEnabled(can_export)
+        if not connected:
+            export_tip = "Сначала подключитесь к серверу."
+        elif self._query_running:
+            export_tip = "Дождитесь, пока запрос закончится."
+        elif has_result and self.tree.checked_tables():
+            export_tip = "Можно записать результат запроса или отмеченные таблицы. Программа спросит, что именно."
+        elif has_result:
+            export_tip = "Записать все строки результата в файл .sql для SQL Server."
+        elif self.tree.checked_tables():
+            export_tip = "Записать отмеченные слева таблицы в файлы .sql."
+        else:
+            export_tip = "Сначала выполните запрос или поставьте галочку у таблицы слева."
+        self.export_button.setToolTip(export_tip)
+        self.load_button.setEnabled(connected and not self._query_running)
+        if not connected:
+            self.load_button.setToolTip("Сначала подключитесь к серверу.")
+        elif self._query_running:
+            self.load_button.setToolTip("Дождитесь, пока запрос закончится.")
+        else:
+            self.load_button.setToolTip("Взять файл выгруженной таблицы и вставить его строки в таблицу на этом сервере.")
         self.queries_button.setEnabled(not self._query_running)
         self.objects_hint.setVisible(not connected or self.tree.topLevelItemCount() == 0)
 
@@ -483,7 +529,10 @@ class MainWindow(QMainWindow):
         self.tree.apply_filter(self.filter_edit.text())
 
     def _on_checked(self, count: int) -> None:
-        self.checked_label.setText(f"Отмечено: {count}")
+        if count:
+            self.checked_label.setText(f"Отмечено таблиц: {count}. «Выгрузить» запишет их в файлы .sql.")
+        else:
+            self.checked_label.setText("Галочка у таблицы — это выгрузка самой таблицы, не результата запроса.")
         self._refresh_actions()
 
     def _execute(self) -> None:
@@ -730,13 +779,19 @@ class MainWindow(QMainWindow):
         if params is None:
             self._report_schedule(job.name, "Подключение для задания не найдено.", failed=True, job_id=job.id, slot=slot, manual=manual)
             return
-        stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        filename = safe_filename(job.target_schema, job.target_table).replace(".sql", f"_{stamp}.sql")
-        destination = Path(folder) / filename
+        if job.action == "load":
+            self._start_load(job, params, folder, slot, manual)
+            return
+        day = slot or datetime.now().date().isoformat()
+        destination = Path(folder) / scheduled_export_name(job.target_schema, job.target_table, day)
         self._schedule_job_id = job.id
         self._schedule_slot = slot
         self._schedule_manual = manual
         self._schedule_mode = job.mode
+        present = existing_export(folder, job.target_schema, job.target_table, day)
+        if present is not None:
+            self._complete_schedule(str(present), f"Файл уже есть в папке, запрос не повторялся: {present}")
+            return
         worker = QueryExportWorker(
             params,
             job.sql,
@@ -770,6 +825,12 @@ class MainWindow(QMainWindow):
         return None
 
     def _schedule_succeeded(self, path: str, count: int) -> None:
+        if not Path(path).is_file():
+            self._schedule_failed(f"После выгрузки файла нет в папке: {path}")
+            return
+        self._complete_schedule(path, f"{count} строк → {path}")
+
+    def _complete_schedule(self, path: str, text: str) -> None:
         changes: dict = {
             "last_run": datetime.now().isoformat(timespec="seconds"),
             "last_error": "",
@@ -784,9 +845,8 @@ class MainWindow(QMainWindow):
             else:
                 changes["last_slot"] = self._schedule_slot
         update_job(self._schedule_job_id, **changes)
-        text = f"{count} строк → {path}"
         self._log(f"Расписание: {text}")
-        self._tray_message("Выгрузка готова", text)
+        self._tray_message("Выгрузка", text)
 
     def _schedule_failed(self, message: str) -> None:
         job = next((item for item in load_jobs() if item.id == self._schedule_job_id), None)
@@ -829,6 +889,47 @@ class MainWindow(QMainWindow):
     def _run_saved(self, sql: str) -> None:
         self.editor.setPlainText(sql)
         self._execute()
+
+    def _start_load(self, job, params: ConnParams, folder: str, slot: str, manual: bool) -> None:
+        name = job.source_file.strip()
+        self._schedule_job_id = job.id
+        self._schedule_slot = slot
+        self._schedule_manual = manual
+        self._schedule_mode = job.mode
+        if not name:
+            self._report_schedule(job.name, "Не указано имя файла.", failed=True, job_id=job.id, slot=slot, manual=manual)
+            return
+        path = Path(folder) / name
+        if not path.is_file():
+            self._report_schedule(
+                job.name,
+                f"Файла ещё нет в папке: {path}. Проверю позже.",
+                failed=True,
+                job_id=job.id,
+                slot=slot,
+                manual=manual,
+            )
+            return
+        schema = (job.target_schema or "dbo").strip()
+        table = job.target_table.strip()
+        if not table:
+            self._report_schedule(job.name, "Не указана таблица на вашем сервере.", failed=True, job_id=job.id, slot=slot, manual=manual)
+            return
+        worker = ScriptWorker(params, path, schema, table)
+        worker.succeeded.connect(self._load_succeeded)
+        worker.failed.connect(self._schedule_failed)
+        worker.finished.connect(worker.deleteLater)
+        self._schedule_worker = worker
+        self._log(f"Расписание «{job.name}»: строки из {path} в [{schema}].[{table}].")
+        worker.start()
+
+    def _load_succeeded(self, batches: int) -> None:
+        self._complete_schedule("", f"Строки вставлены в таблицу. Команд: {batches}.")
+
+    def _load_file(self) -> None:
+        if self._params is None or self._query_running:
+            return
+        LoadDialog(self._params, self).exec()
 
     def _has_result(self) -> bool:
         return bool(self._last_sql) and self.model.columnCount() > 0

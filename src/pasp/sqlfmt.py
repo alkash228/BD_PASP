@@ -198,3 +198,36 @@ def write_insert_batch(
 def safe_filename(schema: str, table: str) -> str:
     raw = f"{schema}.{table}.sql"
     return "".join("_" if char in '<>:"/\\|?*' else char for char in raw)
+
+
+_TARGET = re.compile(
+    r"INSERT\s+INTO\s+\[((?:\]\]|[^\]])*)\]\.\[((?:\]\]|[^\]])*)\]",
+    re.IGNORECASE,
+)
+
+
+def script_target(sql: str) -> tuple[str, str] | None:
+    """Схема и таблица из файла выгрузки, который пишет сама программа."""
+    match = _TARGET.search(sql)
+    if match is None:
+        return None
+    return match.group(1).replace("]]", "]"), match.group(2).replace("]]", "]")
+
+
+def retarget_export_script(sql: str, schema: str, table: str) -> str:
+    """Направляет INSERT из выгруженного файла в таблицу на этом сервере."""
+    found = script_target(sql)
+    if found is None:
+        raise ValueError("В файле нет выгрузки таблицы: не найден INSERT INTO [схема].[таблица].")
+    old_schema, old_table = found
+    old_qualified = f"{quote_ident(old_schema)}.{quote_ident(old_table)}"
+    new_qualified = f"{quote_ident(schema)}.{quote_ident(table)}"
+    if old_qualified != new_qualified:
+        sql = sql.replace(old_qualified, new_qualified)
+    old_object = (old_schema + "." + old_table).replace("'", "''")
+    new_object = (schema + "." + table).replace("'", "''")
+    old_id = f"OBJECT_ID(N'{old_object}'"
+    new_id = f"OBJECT_ID(N'{new_object}'"
+    if old_id != new_id:
+        sql = sql.replace(old_id, new_id)
+    return sql

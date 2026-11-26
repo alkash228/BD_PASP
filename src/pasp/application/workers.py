@@ -20,7 +20,7 @@ from pasp.infrastructure.mssql import (
     list_databases,
     object_details,
 )
-from pasp.sqlfmt import format_cell, split_batches
+from pasp.sqlfmt import format_cell, retarget_export_script, split_batches
 
 _FETCH_BATCH = 2000
 
@@ -355,3 +355,65 @@ class QueryExportWorker(QThread):
             self.failed.emit("Отменено")
         except Exception as exc:
             self.failed.emit(format_db_error(exc))
+
+
+class ScriptWorker(QThread):
+    """Вставляет строки из файла выгрузки в указанную таблицу на сервере."""
+
+    message = pyqtSignal(str)
+    progress = pyqtSignal(int, int)
+    succeeded = pyqtSignal(int)
+    failed = pyqtSignal(str)
+
+    def __init__(self, params: ConnParams, path: Path, schema: str, table: str):
+        super().__init__()
+        self._params = params
+        self._path = path
+        self._schema = schema
+        self._table = table
+        self._stop = threading.Event()
+
+    def stop(self) -> None:
+        self._stop.set()
+
+    def run(self) -> None:
+        connection = None
+        try:
+            sql = retarget_export_script(self._path.read_text(encoding="utf-8-sig"), self._schema, self._table)
+            batches = split_batches(sql)
+            if not batches:
+                self.failed.emit("В файле нет команд.")
+                return
+            connection = connect(self._params, query_timeout=0)
+            cursor = connection.cursor()
+            try:
+                total = len(batches)
+                for index, batch in enumerate(batches, start=1):
+                    if self._stop.is_set():
+                        self.failed.emit("Отменено")
+                        return
+                    self.progress.emit(index, total)
+                    cursor.execute(batch)
+                    self._discard(cursor)
+                self.succeeded.emit(total)
+            finally:
+                cursor.close()
+        except Exception as exc:
+            if self._stop.is_set() or _cancelled(exc):
+                self.failed.emit("Отменено")
+            else:
+                self.failed.emit(format_db_error(exc))
+        finally:
+            if connection is not None:
+                connection.close()
+
+    def _discard(self, cursor) -> None:
+        while True:
+            if self._stop.is_set():
+                return
+            if cursor.description:
+                while cursor.fetchmany(2000):
+                    if self._stop.is_set():
+                        return
+            if not cursor.nextset():
+                return

@@ -34,7 +34,11 @@ QLabel#PaneTitle {
     border-bottom: 1px solid #C4C4C4;
     padding: 6px 12px;
 }
-QLabel#EmptyHint, QLabel#Muted {
+QLabel#EmptyHint {
+    color: #242424;
+    padding: 12px 16px;
+}
+QLabel#Muted {
     color: #3B3B3B;
 }
 QLabel#ErrorText {
@@ -153,6 +157,22 @@ QHeaderView::section {
     padding: 6px 8px;
     font-weight: 600;
 }
+QGroupBox {
+    font-weight: 600;
+    color: #242424;
+    background: #FFFFFF;
+    border: 1px solid #C4C4C4;
+    border-radius: 6px;
+    margin-top: 14px;
+    padding: 16px 12px 12px 12px;
+}
+QGroupBox::title {
+    subcontrol-origin: margin;
+    subcontrol-position: top left;
+    left: 12px;
+    padding: 0 4px;
+    background: #F5F5F5;
+}
 QCheckBox {
     spacing: 8px;
     min-height: 28px;
@@ -231,7 +251,7 @@ def _sharp(font: QFont) -> QFont:
 
 def body_font() -> QFont:
     font = QFont("Segoe UI")
-    font.setPointSize(10)
+    font.setPointSize(11)
     font.setStyleHint(QFont.StyleHint.SansSerif)
     return _sharp(font)
 
@@ -239,7 +259,7 @@ def body_font() -> QFont:
 def mono_font() -> QFont:
     font = QFont()
     font.setFamilies(["Cascadia Mono", "Cascadia Code", "Consolas", "Courier New"])
-    font.setPointSize(10)
+    font.setPointSize(11)
     font.setStyleHint(QFont.StyleHint.Monospace)
     return _sharp(font)
 

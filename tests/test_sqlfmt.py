@@ -12,6 +12,8 @@ from pasp.sqlfmt import (
     split_batches,
     sql_literal,
     write_insert_batch,
+    retarget_export_script,
+    script_target,
 )
 
 
@@ -74,6 +76,40 @@ class SqlFormatTests(unittest.TestCase):
         self.assertIn("[Id] int IDENTITY(1,1) NOT NULL", script)
         self.assertNotIn("Calc", script)
         self.assertIn("IF OBJECT_ID", script)
+
+
+class RetargetExportTests(unittest.TestCase):
+    def _exported(self) -> str:
+        handle = StringIO()
+        handle.write(
+            create_table_sql(
+                "dbo",
+                "Item",
+                [ColumnMeta("Id", "int", False, True, 1, 1, False, "int")],
+            )
+        )
+        write_insert_batch(handle, "dbo", "Item", ["Id", "Name"], [(1, "a'b")], identity=True)
+        return handle.getvalue()
+
+    def test_script_names_the_exported_table(self):
+        self.assertEqual(script_target(self._exported()), ("dbo", "Item"))
+
+    def test_rows_go_into_the_table_on_this_server(self):
+        script = retarget_export_script(self._exported(), "archive", "Orders")
+        self.assertIn("INSERT INTO [archive].[Orders] ([Id], [Name]) VALUES", script)
+        self.assertIn("SET IDENTITY_INSERT [archive].[Orders] ON;", script)
+        self.assertIn("CREATE TABLE [archive].[Orders]", script)
+        self.assertIn("OBJECT_ID(N'archive.Orders'", script)
+        self.assertNotIn("[dbo].[Item]", script)
+        self.assertIn("N'a''b'", script)
+
+    def test_same_table_keeps_the_script(self):
+        original = self._exported()
+        self.assertEqual(retarget_export_script(original, "dbo", "Item"), original)
+
+    def test_file_without_table_export_is_rejected(self):
+        with self.assertRaises(ValueError):
+            retarget_export_script("SELECT 1\nGO\n", "dbo", "Item")
 
 
 if __name__ == "__main__":

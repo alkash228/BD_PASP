@@ -7,8 +7,10 @@ import json
 import uuid
 from dataclasses import asdict, dataclass, field, replace
 from datetime import datetime
+from pathlib import Path
 
 from pasp.paths import schedules_path
+from pasp.sqlfmt import safe_filename
 
 
 @dataclass
@@ -32,18 +34,45 @@ class ScheduleJob:
     last_run: str = ""
     last_error: str = ""
     retry_after: str = ""
+    action: str = "export"
+    source_file: str = ""
 
     @staticmethod
     def new_id() -> str:
         return uuid.uuid4().hex
 
 
+def scheduled_export_name(schema: str, table: str, day: str) -> str:
+    """Одно имя на дату слота, чтобы повторная проверка находила тот же файл."""
+    name = safe_filename(schema, table)
+    if name.lower().endswith(".sql"):
+        name = name[:-4]
+    stamp = day.replace("-", "")
+    return f"{name}_{stamp}.sql"
+
+
+def existing_export(folder: str, schema: str, table: str, day: str) -> Path | None:
+    path = Path(folder) / scheduled_export_name(schema, table, day)
+    try:
+        if path.is_file() and path.stat().st_size > 0:
+            return path
+    except OSError:
+        return None
+    return None
+
+
 def describe_job(job: ScheduleJob) -> str:
     clock = f"{job.hour:02d}:{job.minute:02d}"
     if job.mode == "dates":
         when = ", ".join(job.dates) if job.dates else "даты не заданы"
-        return f"{when} в {clock}"
-    return f"каждый месяц, {job.day}-е число, в {clock}"
+        when = f"{when} в {clock}"
+    else:
+        when = f"каждый месяц, {job.day}-е число, в {clock}"
+    if job.action == "load":
+        name = job.source_file or "файл не указан"
+        target = f"{job.target_schema or 'dbo'}.{job.target_table}" if job.target_table else "таблица не указана"
+        return f"загрузить {name} в {target}, {when}"
+    return f"выгрузить в файл, {when}"
 
 
 def due_slot(job: ScheduleJob, now: datetime) -> str | None:
@@ -109,6 +138,8 @@ def load_jobs() -> list[ScheduleJob]:
                 last_run=str(item.get("last_run") or ""),
                 last_error=str(item.get("last_error") or ""),
                 retry_after=str(item.get("retry_after") or ""),
+                action="load" if item.get("action") == "load" else "export",
+                source_file=str(item.get("source_file") or ""),
             )
         )
     return jobs
